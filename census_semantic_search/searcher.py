@@ -9,6 +9,16 @@ import re
 
 # Main query processor
 
+# Big change that MUST be made at some point: part of the issue with questionable 
+# column selection is that we are not properly selecting the table we want first
+# and then selecting from available columns in that table. What is happening is 
+# the potential relevant columns are selected from a plethora of tables, and then once the llm
+# chooses the table, we filter our available choices by that table. Its a lot slower,
+# less accurate, and more costly for the openai api.
+
+# In general this whole ish needs to be altered properly and fixed. Another issue
+# is the 'table_list' we are giving the llm to choose from is literally empty??
+
 class CensusSemanticSearcher:
     def __init__(self, indexer, geo_resolver, bq_client):
         self.indexer = indexer
@@ -17,7 +27,7 @@ class CensusSemanticSearcher:
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         self.openai_client = OpenAI()
         
-    def search_tables(self, query: str, k: int = 20) -> pd.DataFrame:
+    def search_tables(self, query: str, k: int = 100) -> pd.DataFrame:
         """Search for relevant tables and variables using semantic search"""
         # Encode query
         query_embedding = self.model.encode([query], convert_to_numpy=True)
@@ -72,59 +82,129 @@ Focus on what census data the user wants to see."""
     
     async def filter_results_with_llm(self, query: str, candidates: pd.DataFrame, 
                                      intent: Dict) -> Dict:
-        """Use LLM to select best tables and variables"""
-        # Prepare candidate info
-        columns = candidates[candidates['type'] == 'column']
+        """Use LLM to select best table first, then columns from that table"""
+        # Step 1: Select the best table
         tables = candidates[candidates['type'] == 'table']
         
-        col_list = "\n".join([
-            f"- {row['column_name']}: {row['description']} (from {row['table_name']})"
-            for _, row in columns.head(15).iterrows()
-        ])
-        
         table_list = "\n".join([
-            f"- {row['table_name']} (code: {row['table_code']}, year: {row['year']})"
-            for _, row in tables.head(10).iterrows()
+            f"- {row['table_name']} (code: {row['table_code']}, year: {row['year']}, geo_level: {row['geo_level']})"
+            for _, row in tables.head(20).iterrows()
         ])
-        
-        prompt = f"""Select the most relevant census columns for this query.
+        print(len(table_list))
+        print("AAAAAAA")
+        table_prompt = f"""Select the most relevant census table for this query.
 
 Query: "{query}"
 Intent: {json.dumps(intent)}
-
-Available Columns:
-{col_list}
 
 Available Tables:
 {table_list}
 
 Return a JSON object:
 {{
-    "selected_variables": ["total_pop", "white_pop"],
     "selected_table": "county_2021_1yr",
-    "reasoning": "why these were selected"
+    "reasoning": "why this table was selected"
 }}
 
-Choose column names (not variable codes) that directly answer the query. For the table, prefer the most recent year and appropriate geographic level."""
+IMPORTANT TABLE SELECTION GUIDELINES:
+1. Prefer recent years (2020-2022) unless user specifies otherwise
+2. Match the geographic level from intent: {intent.get('geo_level', 'county')}
+3. Choose tables that are most likely to contain the requested information
+4. For broad queries, prefer comprehensive tables over specialized ones"""
 
-        response = self.openai_client.chat.completions.create(
+        table_response = self.openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": table_prompt}],
             temperature=0
         )
         
-        content = response.choices[0].message.content
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(0))
+        table_content = table_response.choices[0].message.content
+        table_json_match = re.search(r'\{.*\}', table_content, re.DOTALL)
+        
+        if table_json_match:
+            table_result = json.loads(table_json_match.group(0))
+            selected_table = table_result['selected_table']
         else:
-            # Fallback to top results
-            top_col = columns.iloc[0] if len(columns) > 0 else None
-            top_table = tables[tables['geo_level'] == intent['geo_level']].iloc[0] if len(tables) > 0 else None
+            # Fallback to most recent table with correct geo level
+            filtered_tables = tables[tables['geo_level'] == intent.get('geo_level', 'county')]
+            if len(filtered_tables) > 0:
+                selected_table = filtered_tables.iloc[0]['table_name']
+            else:
+                selected_table = tables.iloc[0]['table_name'] if len(tables) > 0 else "county_2021_1yr"
+        
+        # Step 2: Get columns only from the selected table
+        table_columns = candidates[
+            (candidates['type'] == 'column') & 
+            (candidates['table_name'] == selected_table)
+        ]
+        
+        if len(table_columns) == 0:
+            # Fallback: if no columns found for selected table, use all columns
+            table_columns = candidates[candidates['type'] == 'column']
+        
+        col_list = "\n".join([
+            f"- {row['column_name']}: {row['description']}"
+            for _, row in table_columns.iterrows()
+        ])
+        print(col_list)
+        column_prompt = f"""Select the most relevant census columns from this specific table for the query.
+
+Query: "{query}"
+Intent: {json.dumps(intent)}
+Selected Table: {selected_table}
+
+Available Columns from {selected_table}:
+{col_list}
+
+Return a JSON object:
+{{
+    "selected_variables": ["total_pop", "white_pop"],
+    "reasoning": "why these columns were selected"
+}}
+
+IMPORTANT COLUMN SELECTION GUIDELINES:
+1. For race/ethnicity queries, prioritize general population columns ending with "_pop" 
+2. Choose columns that provide the broadest, most useful demographic information first
+3. Always include total_pop for context when selecting demographic subgroups
+4. For income/economic queries, prefer median over mean, and general measures over specific breakdowns
+5. Do not be afraid to choose many columns. For example, if someone wants all commute related information, return ALL commute related columns from this table
+6. Only select columns that actually exist in the provided list
+
+Choose column names (not variable codes) that directly answer the query."""
+
+        column_response = self.openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": column_prompt}],
+            temperature=0
+        )
+        
+        column_content = column_response.choices[0].message.content
+        column_json_match = re.search(r'\{.*\}', column_content, re.DOTALL)
+        
+        if column_json_match:
+            column_result = json.loads(column_json_match.group(0))
+            
+            # Clean the selected variables to ensure they are valid column names
+            cleaned_variables = []
+            for var in column_result.get('selected_variables', []):
+                # Extract just the column name (before any colon or description)
+                clean_var = var.split(':')[0].strip()
+                cleaned_variables.append(clean_var)
             
             return {
-                "selected_variables": [top_col['column_name']] if top_col is not None else ["total_pop"],
-                "selected_table": top_table['table_name'] if top_table is not None else "county_2021_1yr",
+                "selected_variables": cleaned_variables,
+                "selected_table": selected_table,
+                "reasoning": f"Table: {table_result.get('reasoning', 'Selected based on relevance')}; Columns: {column_result.get('reasoning', 'Selected based on relevance')}"
+            }
+        else:
+            # Fallback to top columns from selected table
+            top_columns = table_columns.head(5)['column_name'].tolist()
+            if not top_columns:
+                top_columns = ["total_pop"]
+            
+            return {
+                "selected_variables": top_columns,
+                "selected_table": selected_table,
                 "reasoning": "Fallback selection"
             }
     
@@ -139,7 +219,7 @@ Choose column names (not variable codes) that directly answer the query. For the
         
         # 2. Semantic search
         print("🔎 Searching for relevant tables and variables...")
-        candidates = self.search_tables(query, k=30)
+        candidates = self.search_tables(query, k=200)
         
         # 3. LLM filtering
         print("🤖 Filtering with LLM...")

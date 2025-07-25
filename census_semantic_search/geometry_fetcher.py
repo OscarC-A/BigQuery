@@ -60,6 +60,22 @@ class GeometryFetcher:
         """
         Merge census data with geometries to create GeoJSON
         """
+        # Check if geometries is empty (fallback failed)
+        if geometries.empty or 'geo_id' not in geometries.columns:
+            print("⚠️ No geometries available, returning data without spatial information")
+            # Create a basic structure with just the data
+            return {
+                'type': 'FeatureCollection',
+                'features': [],
+                'metadata': {
+                    'source': 'US Census Bureau ACS',
+                    'geometry_source': 'None - geometry fetch failed',
+                    'features_count': 0,
+                    'data_rows': len(census_data)
+                },
+                'data': census_data.to_dict('records')
+            }
+        
         # Merge on geo_id
         merged = geometries.merge(
             census_data,

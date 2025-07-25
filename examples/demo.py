@@ -36,8 +36,8 @@ async def main():
     
     # Example queries
     queries = [
-        "find me race demographic information for georgia counties"#,
-        #"show median household income for counties in texas",
+        "return all commute related information for new york counties"
+        #"show median household income for counties in texas"
         #"what is the education level in california counties"
     ]
     
@@ -64,7 +64,7 @@ async def main():
             )
             
             # Save result
-            output_file = f"output_{query[:20].replace(' ', '_')}.geojson"
+            output_file = f"results/{query[:25].replace(' ', '_')}.geojson"
             with open(output_file, 'w') as f:
                 json.dump(geojson, f, indent=2)
             

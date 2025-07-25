@@ -110,18 +110,32 @@ class ACSMetadataIndexer:
         # Add topic keywords based on column name patterns
         col_lower = col_name.lower()
         
-        if any(word in col_lower for word in ['pop', 'population']):
+        # Prioritize general population columns with special keywords
+        if col_name.endswith('_pop'):
+            desc_parts.append('total population count')
+            if any(race in col_lower for race in ['white', 'black', 'asian', 'hispanic', 'latino']):
+                desc_parts.append('race ethnicity demographics general population')
+            else:
+                desc_parts.append('population demographics general')
+        elif any(word in col_lower for word in ['pop', 'population']):
             desc_parts.append('population demographics')
+            
         if any(word in col_lower for word in ['white', 'black', 'asian', 'race', 'ethnicity']):
             desc_parts.append('race ethnicity demographics')
-        if any(word in col_lower for word in ['income', 'earnings', 'median']):
-            desc_parts.append('income economics earnings')
-        if any(word in col_lower for word in ['housing', 'units', 'occupied', 'owner', 'renter']):
-            desc_parts.append('housing units occupancy')
+        if any(word in col_lower for word in ['income', 'earnings', 'median', 'poverty', 'wage', 'salary']):
+            desc_parts.append('income economics earnings wage poverty salary')
+        if any(word in col_lower for word in ['housing', 'units', 'occupied', 'owner', 'renter', 'vacant', 'household', 'tenure']):
+            desc_parts.append('housing units occupancy household tenure')
         if any(word in col_lower for word in ['education', 'school', 'degree', 'bachelor', 'master']):
             desc_parts.append('education attainment degree')
-        if any(word in col_lower for word in ['commute', 'transport', 'work', 'travel']):
-            desc_parts.append('commuting transportation work')
+        if any(word in col_lower for word in ['commute', 'transport', 'work', 'travel', 'vehicle', 'car', 'bus', 'train', 'bike', 'walk', 'drove', 'public', 'carpool', 'means', 'transit']):
+            desc_parts.append('commuting transportation work travel vehicle means transit public')
+        if any(word in col_lower for word in ['age', 'years', 'under', 'over']):
+            desc_parts.append('age demographics')
+        if any(word in col_lower for word in ['male', 'female', 'gender', 'sex']):
+            desc_parts.append('gender sex demographics')
+        if any(word in col_lower for word in ['disability', 'veteran', 'military', 'service']):
+            desc_parts.append('disability veteran military service')
         
         return ' '.join(desc_parts)
         
