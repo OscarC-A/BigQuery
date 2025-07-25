@@ -36,8 +36,8 @@ async def main():
     
     # Example queries
     queries = [
-        "return all commute related information for new york counties"
-        #"show median household income for counties in texas"
+        #"return all commute related information for new york counties"
+        "show median household income for counties in texas"
         #"what is the education level in california counties"
     ]
     
