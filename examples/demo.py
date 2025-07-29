@@ -37,7 +37,7 @@ async def main():
     # Example queries
     queries = [
         #"return all commute related information for new york counties"
-        "show median household income for counties in texas"
+        "Show median household income by zip codes in new york"
         #"what is the education level in california counties"
     ]
     
@@ -52,9 +52,8 @@ async def main():
             
             # Fetch geometries
             print("\n📍 Fetching geometries...")
-            geometries = await geometry_fetcher.fetch_county_geometries(
-                geo_info['state_fips']
-            )
+            geometries = await geometry_fetcher.fetch_geometries(geo_info)
+                
             
             # Merge into GeoJSON
             print("🗺️ Creating GeoJSON...")

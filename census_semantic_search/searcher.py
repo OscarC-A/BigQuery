@@ -3,16 +3,16 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import re
 
 # Main query processor
 
 # Redesigned approach: 
-# 1. Choose from a select few ACS tables first (Kinda hard coded rn)
+# 1. Choose from a select few ACS tables first (Kinda hard coded rn but is really all we need for acs data)
 # 2. Pick the best table based on query
 # 3. Get ALL columns from that specific table  
-# 4. Feed all columns to LLM to choose the best subset
+# 4. Feed all columns to LLM to choose the best subset (could be a LOT easier on chat if we didnt feed all column names)
 
 class CensusSemanticSearcher:
     def __init__(self, indexer, geo_resolver, bq_client):
@@ -24,100 +24,101 @@ class CensusSemanticSearcher:
         
         # Select few ACS tables to choose from (most comprehensive and commonly used)
         self.acs_tables = {
-            'county_2021_1yr': {
-                'description': 'County-level demographic, economic, and housing data from 2021 ACS 1-year estimates',
+            'county_2020_5yr': {
+                'description': 'County-level demographic, economic, and housing data from 2020 ACS 5-year estimates',
                 'geo_level': 'county',
-                'year': 2021,
-                'coverage': 'comprehensive'
+                'year': 2020
             },
-            'county_2020_1yr': {
-                'description': 'County-level demographic, economic, and housing data from 2020 ACS 1-year estimates', 
-                'geo_level': 'county',
-                'year': 2020,
-                'coverage': 'comprehensive'
+            'zcta_2020_5yr': {
+                'description': 'Zip code tabulation area-level demographic, economic, and housing data from 2020 ACS 5-year estimates', 
+                'geo_level': 'zcta',
+                'year': 2020
             },
             'state_2021_1yr': {
                 'description': 'State-level demographic, economic, and housing data from 2021 ACS 1-year estimates',
                 'geo_level': 'state', 
-                'year': 2021,
-                'coverage': 'comprehensive'
+                'year': 2021
             },
-            'tract_2021_5yr': {
-                'description': 'Census tract-level demographic, economic, and housing data from 2021 ACS 5-year estimates',
+            'censustract_2020_5yr': {
+                'description': 'Census tract-level demographic, economic, and housing data from 2020 ACS 5-year estimates',
                 'geo_level': 'tract',
-                'year': 2021, 
-                'coverage': 'comprehensive'
+                'year': 2020
             }
         }
         
     async def select_best_table(self, query: str, intent: Dict) -> str:
-        """Step 1: Select the most relevant ACS table from our predefined list"""
-        table_descriptions = []
-        for table_name, metadata in self.acs_tables.items():
-            table_descriptions.append(
-                f"- {table_name}: {metadata['description']} (Geographic level: {metadata['geo_level']}, Year: {metadata['year']})"
-            )
+        # A lot below is commented out, as llm not needed to select best table at this point, we are just
+        # finding the best table based on our geo_level for now
+
+#        """Step 1: Select the most relevant ACS table from our predefined list"""
+#         table_descriptions = []
+#         for table_name, metadata in self.acs_tables.items():
+#             table_descriptions.append(
+#                 f"- {table_name}: {metadata['description']} (Geographic level: {metadata['geo_level']}, Year: {metadata['year']})"
+#             )
         
-        table_list = "\n".join(table_descriptions)
-        prompt = f"""Select the most relevant ACS table for this query from the provided options.
+#         table_list = "\n".join(table_descriptions)
+#         prompt = f"""Select the most relevant ACS table for this query from the provided options.
 
-Query: "{query}"
-Intent: {json.dumps(intent)}
+# Query: "{query}"
+# Intent: {json.dumps(intent)}
 
-Available ACS Tables:
-{table_list}
+# Available ACS Tables:
+# {table_list}
 
-Return a JSON object:
-{{
-    "selected_table": "county_2021_1yr",
-    "reasoning": "why this table was selected"
-}}
+# Return a JSON object:
+# {{
+#     "selected_table": "county_2020_5yr",
+#     "reasoning": "why this table was selected"
+# }}
 
-SELECTION GUIDELINES:
-1. Match the geographic level from intent: {intent.get('geo_level', 'county')}
-2. Prefer recent years (2021 over 2020) unless user specifies otherwise
-3. For county-level queries, choose from county tables
-4. For state-level queries, choose state_2021_1yr
-5. For tract-level queries, choose tract_2021_5yr (uses 5-year estimates for better coverage)
-6. Consider the comprehensiveness - all these tables contain demographic, economic, and housing data"""
+# SELECTION GUIDELINES:
+# 1. Match the geographic level from intent: {intent.get('geo_level', 'county')}
+# 2. Prefer recent years unless user specifies otherwise
+# 3. For state, county, zip, or tract-level queries, choose from state, county, zcta, censustract tables respectively
+# 4. Consider the comprehensiveness - all these tables contain demographic, economic, and housing data"""
 
-        response = self.openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
+#         response = self.openai_client.chat.completions.create(
+#             model="gpt-4o-mini",
+#             messages=[{"role": "user", "content": prompt}],
+#             temperature=0
+#         )
         
-        content = response.choices[0].message.content
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+#         content = response.choices[0].message.content
+#         json_match = re.search(r'\{.*\}', content, re.DOTALL)
         
-        if json_match:
+        # Line below should be 'if json_match' but set to false for now as we can just 
+        # match on geo_level alone
+        if False:
             result = json.loads(json_match.group(0))
-            selected_table = result.get('selected_table', 'county_2021_1yr')
+            selected_table = result.get('selected_table', 'county_2020_5yr')
             print(f"Selected table: {selected_table} - {result.get('reasoning', '')}")
             return selected_table
         else:
             # Fallback based on geo level
             geo_level = intent.get('geo_level', 'county')
-            if geo_level == 'state':
-                return 'state_2021_1yr'
+            if geo_level == 'county':
+                return 'county_2020_5yr'
+            elif geo_level == 'zcta':
+                return 'zcta_2020_5yr'
             elif geo_level == 'tract':
-                return 'tract_2021_5yr'
+                return 'censustract_2020_5yr'
             else:
-                return 'county_2021_1yr'
+                return 'state_2021_1yr'
     
     def get_all_table_columns(self, table_name: str) -> List[Dict]:
         """Step 2: Get ALL columns from the selected table"""
         print(f"Getting all columns for table: {table_name}")
         
         try:
-            # Get column metadata from BigQuery
+            # Get column names from BigQuery
             columns_df = self.bq_client.get_table_columns(table_name)
             
             # Convert to list of dicts with column info
             columns = []
             for _, row in columns_df.iterrows():
                 # Skip geo_id and standard metadata columns
-                if row['column_name'] not in ['geo_id', 'NAME', 'state', 'county']:
+                if row['column_name'] not in ['geo_id']:
                     columns.append({
                         'name': row['column_name'],
                         'data_type': row['data_type'],
@@ -131,39 +132,47 @@ SELECTION GUIDELINES:
             print(f"Error getting columns for {table_name}: {e}")
             # Return some common columns as fallback
             return [
-                {'name': 'total_pop', 'data_type': 'INTEGER', 'description': 'Total population'},
-                {'name': 'white_pop', 'data_type': 'INTEGER', 'description': 'White population'},
-                {'name': 'black_pop', 'data_type': 'INTEGER', 'description': 'Black or African American population'},
-                {'name': 'median_income', 'data_type': 'INTEGER', 'description': 'Median household income'}
+                {'name': 'total_pop', 'data_type': 'FLOAT64', 'description': 'total_pop'},
+                {'name': 'white_pop', 'data_type': 'FLOAT64', 'description': 'white_pop'},
+                {'name': 'black_pop', 'data_type': 'FLOAT64', 'description': 'black_pop'},
+                {'name': 'median_income', 'data_type': 'FLOAT64', 'description': 'median_income'}
             ]
     
     async def analyze_query_intent(self, query: str) -> Dict:
-        """Use LLM to understand query intent"""
+        # Use LLM to understand query intent
+        # There are many more geo levels to consider such as (place, puma, cbsa, block group etc.)
+        # Cbsa or place would be great for more 'vague' queries (metro areas etc.) but don't want to 
+        # overcomplicate things for now
         prompt = f"""Analyze this census data query and extract the intent.
 
 Query: "{query}"
 
 Return a JSON object with:
 {{
-    "geo_level": "county|state|tract",
-    "topics": ["list of topics like race, income, housing"],
+    "geo_level": "state|county|zcta|tract",
+    "point_of_interest": "texas, new york city, tompkins county, deleware, etc."
+    "topics": ["list of topics like race, income, housing, etc."],
     "specific_variables": ["any specific variables mentioned"],
     "year_preference": "latest|specific year|null",
     "aggregation": "none|sum|average|percentage"
 }}
 
+Note that "point_of_interest" should just be the name of the location or area that the query is interested in.
+This may be an entire state, a specific county, a metro area, or a city, for example.
 Focus on what census data the user wants to see."""
 
         response = self.openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0
+            temperature=0.1
         )
         
         content = response.choices[0].message.content
         # Extract JSON from response
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
         if json_match:
+            # Print for debug
+            print(json.loads(json_match.group(0)))
             return json.loads(json_match.group(0))
         else:
             # Fallback
@@ -258,7 +267,7 @@ Choose column names that directly answer the user's query."""
                 "reasoning": "Fallback selection due to parsing error"
             }
     
-    async def process_query(self, query: str) -> pd.DataFrame:
+    async def process_query(self, query: str) -> Tuple[pd.DataFrame, dict, dict]:
         """Main pipeline using the new approach: select table first, then all columns, then LLM selection"""
         print(f"\n🔍 Processing query: '{query}'")
         

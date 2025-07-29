@@ -5,8 +5,8 @@ import faiss
 import json
 import os
 
-# Similar to bigquery_client, do we need to be using table and col codes? How 
-# much is this actually aiding our search (idk)
+# Not really being used at all rn which I know was kinda half the point but chill on me
+# and can be incorporated easy style later
 
 # Also, this is coded so that only works for county level data for now
 
