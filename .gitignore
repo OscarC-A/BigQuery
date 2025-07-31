@@ -1,3 +1,4 @@
 .env
 geometry_cache/
-results/
+results/*
+!results/.gitkeep

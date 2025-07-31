@@ -153,6 +153,14 @@ class GeographicResolver:
                 'state_name': 'georgia',
                 'zip_ranges': ['30001-31999', '39901']
             }
+            
+            For tract level:
+            {
+                'filter_sql': "geo_id LIKE '13%'",
+                'geo_level': 'tract',
+                'state_name': 'georgia',
+                'state_fips': '13'
+            }
         """
         state_name = self.extract_state_from_query(query)
         if not state_name:
@@ -173,15 +181,19 @@ class GeographicResolver:
                 'zip_ranges': zip_ranges
             }
         else:
-            # Handle county and state levels (existing logic)
+            # Handle county, tract, and state levels
             state_fips = self.get_state_fips(state_name)
             if not state_fips:
                 raise ValueError(f"Unknown state: {state_name}")
             
             if geo_level == 'county':
-                filter_sql = f"geo_id LIKE '{state_fips}%'"
+                # County geo_ids are 5 digits: 2-digit state + 3-digit county
+                filter_sql = f"LENGTH(geo_id) = 5 AND geo_id LIKE '{state_fips}%'"
+            elif geo_level == 'tract':
+                # Census tract geo_ids are 11 digits: 2-digit state + 3-digit county + 6-digit tract
+                filter_sql = f"LENGTH(geo_id) = 11 AND geo_id LIKE '{state_fips}%'"
             else:
-                # Placeholder for other levels to be implemented
+                # Default to state-level filtering
                 filter_sql = f"geo_id LIKE '{state_fips}%'"
             
             return {
