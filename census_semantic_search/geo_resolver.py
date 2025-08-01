@@ -179,6 +179,9 @@ class GeographicResolver:
             'custom_boundary': custom_boundary
         }
 
+        if not state_name:
+            state_name = state[0]
+
         # Build filter based on geo level
         if geo_level == 'zcta':
             if custom_boundary:
@@ -187,7 +190,7 @@ class GeographicResolver:
                 if intersect_filter:
                     result['filter_sql'] = intersect_filter
                     result['boundary_name'] = custom_boundary
-                    result['state_name'] = state_name  # Still include state for context
+                    result['state_name'] = state_name # Still include state for context
                     return result
             
             # Fallback to state-based filtering
@@ -209,7 +212,7 @@ class GeographicResolver:
                 intersect_filter = self.boundary_handler.build_intersect_filter(custom_boundary, geo_level)
                 if intersect_filter:
                     # Get state for custom boundary if not already provided
-                    boundary_state = state_name or state[0] or self.boundary_handler.get_state_for_boundary(custom_boundary)
+                    boundary_state = state_name or self.boundary_handler.get_state_for_boundary(custom_boundary)
                     result['filter_sql'] = intersect_filter
                     result['boundary_name'] = custom_boundary
                     result['state_name'] = boundary_state
