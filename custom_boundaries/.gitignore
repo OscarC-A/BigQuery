@@ -1,0 +1,3 @@
+# Custom boundary files
+*.geojson
+!manhattan.geojson

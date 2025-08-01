@@ -1,6 +1,7 @@
 import json
 import os
 from typing import Dict, List, Optional
+from .custom_boundary_handler import CustomBoundaryHandler
 
 # Using dictionary to find state FIPS codes, we can do this for all formats we
 # want, but might be a good idea to alter this one way or another down the road
@@ -85,6 +86,9 @@ class GeographicResolver:
             'wisconsin': ['53001-54990'],
             'wyoming': ['82001-83128']
         }
+
+        # Initialize custom boundary handler
+        self.boundary_handler = CustomBoundaryHandler()
         
     def extract_state_from_query(self, query: str) -> Optional[str]:
         """Extract state name from query"""
@@ -133,9 +137,9 @@ class GeographicResolver:
         
         return f"({' OR '.join(conditions)})"
     
-    def build_geo_filter(self, query: str, geo_level: str) -> Dict:
+    def build_geo_filter(self, query: str, geo_level: str, state: list) -> Dict:
         """
-        Build geographic filter for BigQuery
+        Build geographic filter for BigQuery with custom bound support
         
         Returns:
             For county levels:
@@ -162,43 +166,71 @@ class GeographicResolver:
                 'state_fips': '13'
             }
         """
+
+        # First check for custom boundaries
+        custom_boundary = self.boundary_handler.extract_boundary_from_query(query)
+
         state_name = self.extract_state_from_query(query)
-        if not state_name:
-            raise ValueError(f"Could not extract state from query: {query}")
+        if not state_name and not custom_boundary:
+            raise ValueError(f"Could not extract state or custom boundary from query: {query}")
         
+        result = {
+            'geo_level': geo_level,
+            'custom_boundary': custom_boundary
+        }
+
         # Build filter based on geo level
         if geo_level == 'zcta':
+            if custom_boundary:
+                # For custom boundaries with ZCTA, we'll use ST_INTERSECTS
+                intersect_filter = self.boundary_handler.build_intersect_filter(custom_boundary, geo_level)
+                if intersect_filter:
+                    result['filter_sql'] = intersect_filter
+                    result['boundary_name'] = custom_boundary
+                    result['state_name'] = state_name  # Still include state for context
+                    return result
+            
+            # Fallback to state-based filtering
             zip_ranges = self.get_state_zip_ranges(state_name)
             if not zip_ranges:
                 raise ValueError(f"Unknown state: {state_name}")
             
             filter_sql = self.build_zcta_filter_sql(zip_ranges)
             
-            return {
+            result.update({
                 'filter_sql': filter_sql,
-                'geo_level': geo_level,
                 'state_name': state_name,
                 'zip_ranges': zip_ranges
-            }
+            })
         else:
-            # Handle county, tract, and state levels
+            # Handle county and tract levels
+            if custom_boundary:
+                # Use ST_INTERSECTS for custom boundaries
+                intersect_filter = self.boundary_handler.build_intersect_filter(custom_boundary, geo_level)
+                if intersect_filter:
+                    # Get state for custom boundary if not already provided
+                    boundary_state = state_name or state[0] or self.boundary_handler.get_state_for_boundary(custom_boundary)
+                    result['filter_sql'] = intersect_filter
+                    result['boundary_name'] = custom_boundary
+                    result['state_name'] = boundary_state
+                    return result
+            
+            # Fallback to state-based filtering
             state_fips = self.get_state_fips(state_name)
             if not state_fips:
                 raise ValueError(f"Unknown state: {state_name}")
             
             if geo_level == 'county':
-                # County geo_ids are 5 digits: 2-digit state + 3-digit county
                 filter_sql = f"LENGTH(geo_id) = 5 AND geo_id LIKE '{state_fips}%'"
             elif geo_level == 'tract':
-                # Census tract geo_ids are 11 digits: 2-digit state + 3-digit county + 6-digit tract
                 filter_sql = f"LENGTH(geo_id) = 11 AND geo_id LIKE '{state_fips}%'"
             else:
-                # Default to state-level filtering
                 filter_sql = f"geo_id LIKE '{state_fips}%'"
             
-            return {
+            result.update({
                 'filter_sql': filter_sql,
-                'geo_level': geo_level,
                 'state_name': state_name,
                 'state_fips': state_fips   
-            }
+            })
+            
+        return result

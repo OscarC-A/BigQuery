@@ -5,6 +5,7 @@ from openai import OpenAI
 import json
 from typing import List, Dict, Optional, Tuple
 import re
+import geopandas as gpd
 
 # Main query processor
 
@@ -154,11 +155,14 @@ Return a JSON object with:
     "topics": ["list of topics like race, income, housing, etc."],
     "specific_variables": ["any specific variables mentioned"],
     "year_preference": "latest|specific year|null",
-    "aggregation": "none|sum|average|percentage"
+    "aggregation": "none|sum|average|percentage",
+    "state": "[list of state or states encompassing the point of interest]"
 }}
 
 Note that "point_of_interest" should just be the name of the location or area that the query is interested in.
 This may be an entire state, a specific county, a metro area, or a city, for example.
+"state" is the state or states that the point of interest lies within. For example, if the point of
+interest is manhattan, the state would be ["new york"].
 Focus on what census data the user wants to see."""
 
         response = self.openai_client.chat.completions.create(
@@ -193,7 +197,7 @@ Focus on what census data the user wants to see."""
             f"- {col['name']} ({col['data_type']})"
             for col in all_columns
         ])
-        print(col_list) # For debugging
+        print(col_list[:5]) # For debugging
         
         print(f"Presenting {len(all_columns)} columns to LLM for selection...")
         
@@ -267,7 +271,7 @@ Choose column names that directly answer the user's query."""
                 "reasoning": "Fallback selection due to parsing error"
             }
     
-    async def process_query(self, query: str) -> Tuple[pd.DataFrame, dict, dict]:
+    async def process_query(self, query: str) -> Tuple[gpd.GeoDataFrame, dict, dict]:
         """Main pipeline using the new approach: select table first, then all columns, then LLM selection"""
         print(f"\n🔍 Processing query: '{query}'")
         
@@ -291,16 +295,33 @@ Choose column names that directly answer the user's query."""
         
         # 5. Build geographic filter
         print("🗺️ Building geographic filter...")
-        geo_filter = self.geo_resolver.build_geo_filter(query, intent['geo_level'])
-        print(f"Filter: {geo_filter['filter_sql']}")
+        geo_filter = self.geo_resolver.build_geo_filter(query, intent['geo_level'], intent['state'])
+        #print(f"Filter: {geo_filter['filter_sql']}")
         
         # 6. Query BigQuery
         print("📊 Querying BigQuery...")
-        data = self.bq_client.query_acs_data(
-            selection['selected_table'],
-            selection['selected_variables'],
-            geo_filter['filter_sql']
-        )
+        try:
+            # Using custom geo bounds
+            gdf = self.bq_client.query_acs_with_geometry(
+                selection['selected_table'],
+                selection['selected_variables'],
+                geo_filter['filter_sql'],
+                intent['geo_level'],
+                geo_filter
+            )
+
+            print(f"✅ Retrieved {len(gdf)} features with {len(selection['selected_variables'])} variables and geometries")
+            
+            # Return GeoDataFrame directly (no need for separate geometry fetch)
+            return gdf, geo_filter, selection
+        except Exception as e:
+            print(f"❌ Error in combined query: {str(e)}")
+            print("Falling back to legacy state-only query boundaries...")
+            data = self.bq_client.query_acs_data(
+                selection['selected_table'],
+                selection['selected_variables'],
+                geo_filter['filter_sql']
+            )
         
-        print(f"✅ Retrieved {len(data)} rows with {len(selection['selected_variables'])} variables")
-        return data, geo_filter, selection
+            print(f"✅ Retrieved {len(data)} rows with {len(selection['selected_variables'])} variables")
+            return data, geo_filter, selection

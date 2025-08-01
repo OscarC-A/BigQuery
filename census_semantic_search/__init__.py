@@ -3,6 +3,7 @@ from .indexer import ACSMetadataIndexer
 from .geo_resolver import GeographicResolver
 from .searcher import CensusSemanticSearcher
 from .geometry_fetcher import GeometryFetcher
+from .custom_boundary_handler import CustomBoundaryHandler
 
 __all__ = [
     'CensusBigQueryClient',
@@ -10,4 +11,5 @@ __all__ = [
     'GeographicResolver',
     'CensusSemanticSearcher',
     'GeometryFetcher'
+    'CustomBoundaryHandler'
 ]
