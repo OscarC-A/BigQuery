@@ -17,39 +17,16 @@ import geopandas as gpd
 
 class CensusSemanticSearcher:
     def __init__(self, indexer, geo_resolver, bq_client):
-        self.indexer = indexer
+        # self.indexer = indexer
         self.geo_resolver = geo_resolver
         self.bq_client = bq_client
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         self.openai_client = OpenAI()
         
-        # Select few ACS tables to choose from (most comprehensive and commonly used)
-        self.acs_tables = {
-            'county_2020_5yr': {
-                'description': 'County-level demographic, economic, and housing data from 2020 ACS 5-year estimates',
-                'geo_level': 'county',
-                'year': 2020
-            },
-            'zcta_2020_5yr': {
-                'description': 'Zip code tabulation area-level demographic, economic, and housing data from 2020 ACS 5-year estimates', 
-                'geo_level': 'zcta',
-                'year': 2020
-            },
-            'state_2021_1yr': {
-                'description': 'State-level demographic, economic, and housing data from 2021 ACS 1-year estimates',
-                'geo_level': 'state', 
-                'year': 2021
-            },
-            'censustract_2020_5yr': {
-                'description': 'Census tract-level demographic, economic, and housing data from 2020 ACS 5-year estimates',
-                'geo_level': 'tract',
-                'year': 2020
-            }
-        }
-        
     async def select_best_table(self, query: str, intent: Dict) -> str:
         # A lot below is commented out, as llm not needed to select best table at this point, we are just
-        # finding the best table based on our geo_level for now
+        # finding the best table based on our geo_level for now. Hard coded tables found in 
+        # CensusBigQueryClient class
 
 #        """Step 1: Select the most relevant ACS table from our predefined list"""
 #         table_descriptions = []
@@ -162,7 +139,8 @@ Return a JSON object with:
 Note that "point_of_interest" should just be the name of the location or area that the query is interested in.
 This may be an entire state, a specific county, a metro area, or a city, for example.
 "state" is the state or states that the point of interest lies within. For example, if the point of
-interest is manhattan, the state would be ["new york"].
+interest is manhattan, the state would be ["new york"]. It is CRUCIAL that you do not hallucinate or make an 
+unsure guess for what the "state" is. If you do not know, or are not absolutely sure, return an empty list.
 Focus on what census data the user wants to see."""
 
         response = self.openai_client.chat.completions.create(
@@ -185,7 +163,8 @@ Focus on what census data the user wants to see."""
                 "topics": ["demographics"],
                 "specific_variables": [],
                 "year_preference": "latest",
-                "aggregation": "none"
+                "aggregation": "none",
+                "state": "unknown"
             }
     
     async def select_best_columns(self, query: str, intent: Dict, table_name: str, 
@@ -271,7 +250,7 @@ Choose column names that directly answer the user's query."""
                 "reasoning": "Fallback selection due to parsing error"
             }
     
-    async def process_query(self, query: str) -> Tuple[gpd.GeoDataFrame, dict, dict]:
+    async def process_query(self, query: str, geojson_dir) -> Tuple[gpd.GeoDataFrame, dict, dict]:
         """Main pipeline using the new approach: select table first, then all columns, then LLM selection"""
         print(f"\n🔍 Processing query: '{query}'")
         
@@ -291,11 +270,11 @@ Choose column names that directly answer the user's query."""
         # 4. Let LLM choose the best subset of columns
         print("🤖 LLM selecting best columns...")
         selection = await self.select_best_columns(query, intent, selected_table, all_columns)
-        print(f"Selected: {len(selection['selected_variables'])} variables from {selected_table}")
+        print(f"Selected: {len(selection['selected_variables'])} variables from {selected_table}: {selection['selected_variables']}")
         
         # 5. Build geographic filter
         print("🗺️ Building geographic filter...")
-        geo_filter = self.geo_resolver.build_geo_filter(query, intent['geo_level'], intent['state'])
+        geo_filter = self.geo_resolver.build_geo_filter(query, intent['geo_level'], intent['state'], geojson_dir)
         #print(f"Filter: {geo_filter['filter_sql']}")
         
         # 6. Query BigQuery
@@ -307,21 +286,12 @@ Choose column names that directly answer the user's query."""
                 selection['selected_variables'],
                 geo_filter['filter_sql'],
                 intent['geo_level'],
-                geo_filter
+                geo_filter['state_name']
             )
 
             print(f"✅ Retrieved {len(gdf)} features with {len(selection['selected_variables'])} variables and geometries")
             
-            # Return GeoDataFrame directly (no need for separate geometry fetch)
+            # Return GeoDataFrame directly
             return gdf, geo_filter, selection
         except Exception as e:
             print(f"❌ Error in combined query: {str(e)}")
-            print("Falling back to legacy state-only query boundaries...")
-            data = self.bq_client.query_acs_data(
-                selection['selected_table'],
-                selection['selected_variables'],
-                geo_filter['filter_sql']
-            )
-        
-            print(f"✅ Retrieved {len(data)} rows with {len(selection['selected_variables'])} variables")
-            return data, geo_filter, selection

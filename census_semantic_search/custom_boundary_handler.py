@@ -11,17 +11,19 @@ class CustomBoundaryHandler:
         self.boundaries_dir = boundaries_dir
         self.loaded_boundaries = {}
         
-    def load_boundary(self, boundary_name: str) -> Optional[Dict]:
+    def load_boundary(self, geojson_dir: str) -> Optional[Dict]:
         """Load a custom boundary from GeoJSON file"""
-        if boundary_name in self.loaded_boundaries:
-            return self.loaded_boundaries[boundary_name]
+        if geojson_dir in self.loaded_boundaries:
+            return self.loaded_boundaries[geojson_dir]
             
         # Try to find the boundary file
-        boundary_file = os.path.join(self.boundaries_dir, f"{boundary_name.lower()}.geojson")
+        boundary_file = os.path.join(self.boundaries_dir, f"{geojson_dir.lower()}")
+        boundary_file = os.path.join("", f"{geojson_dir.lower()}")
         if not os.path.exists(boundary_file):
             # Also check in examples folder
-            boundary_file = os.path.join("custom_boundaries", f"{boundary_name.lower()}_geometry_ex.geojson")
+            boundary_file = os.path.join("custom_boundaries", f"{geojson_dir.lower()}")
             if not os.path.exists(boundary_file):
+                print("could not find file")
                 return None
                 
         with open(boundary_file, 'r') as f:
@@ -34,36 +36,12 @@ class CustomBoundaryHandler:
         else:
             geometry = geojson_data
             
-        self.loaded_boundaries[boundary_name] = {
+        self.loaded_boundaries[geojson_dir] = {
             'geometry': geometry,
             'geojson': geojson_data
         }
         
-        return self.loaded_boundaries[boundary_name]
-    
-    def extract_boundary_from_query(self, query: str) -> Optional[str]:
-        """Extract custom boundary names from query"""
-        query_lower = query.lower()
-        
-        # List of known custom boundaries
-        known_boundaries = ['manhattan', 'brooklyn', 'queens', 'bronx', 'staten island']
-        
-        for boundary in known_boundaries:
-            if boundary in query_lower:
-                return boundary
-                
-        return None
-    
-    def get_state_for_boundary(self, boundary_name: str) -> Optional[str]:
-        """Get the state name for a custom boundary"""
-        boundary_to_state = {
-            'manhattan': 'new york',
-            'brooklyn': 'new york', 
-            'queens': 'new york',
-            'bronx': 'new york',
-            'staten island': 'new york'
-        }
-        return boundary_to_state.get(boundary_name.lower())
+        return self.loaded_boundaries[geojson_dir]
     
     def geometry_to_wkt(self, geometry: Dict) -> str:
         """Convert GeoJSON geometry to WKT format for BigQuery"""
@@ -73,9 +51,9 @@ class CustomBoundaryHandler:
         # Return WKT representation
         return geom.wkt
     
-    def build_intersect_filter(self, boundary_name: str, geo_level: str) -> Optional[str]:
+    def build_intersect_filter(self, geojson_dir: str, geo_level: str) -> Optional[str]:
         """Build ST_INTERSECTS filter for BigQuery"""
-        boundary_data = self.load_boundary(boundary_name)
+        boundary_data = self.load_boundary(geojson_dir)
         if not boundary_data:
             return None
             

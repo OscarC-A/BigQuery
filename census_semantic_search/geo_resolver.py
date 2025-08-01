@@ -2,6 +2,7 @@ import json
 import os
 from typing import Dict, List, Optional
 from .custom_boundary_handler import CustomBoundaryHandler
+from .geojson_state_detect import StateDetector
 
 # Using dictionary to find state FIPS codes, we can do this for all formats we
 # want, but might be a good idea to alter this one way or another down the road
@@ -87,10 +88,11 @@ class GeographicResolver:
             'wyoming': ['82001-83128']
         }
 
-        # Initialize custom boundary handler
+        # Initialize custom boundary handler and GeoJson detector
         self.boundary_handler = CustomBoundaryHandler()
+        self.geojson_state_detector = StateDetector()
         
-    def extract_state_from_query(self, query: str) -> Optional[str]:
+    def extract_state_from_query(self, query: str, intent_state: list, geojson_dir: str) -> Optional[str]:
         """Extract state name from query"""
         query_lower = query.lower()
         
@@ -98,10 +100,28 @@ class GeographicResolver:
         if any(dc_term in query_lower for dc_term in ['washington dc', 'washington d.c.', 'dc', 'district of columbia', 'd.c.']):
             return 'district of columbia'
         
+        state = ""
+        
+        # First check if name of state is in query. If not, examine for state is geojson file. Then, fall back to 
+        # llm interpretation in analyzequeryintent. Finally, fall back to querying every table for geom.
         for state_name, fips in self.state_fips.items():
             if state_name in query_lower:
                 return state_name
-        return None
+            elif state == "":
+                state = self.geojson_state_detector.find_state_in_geojson(geojson_dir)
+                if state != "":
+                    return state
+            elif state == "" and intent_state != []:
+                if intent_state[0] in self.state_fips:
+                    state = intent_state[0]
+                    return state
+            else:
+                # No state found, use brute force method
+                state = "brute"
+                return state
+    
+        return state
+
     
     def get_state_fips(self, state_name: str) -> Optional[str]:
         """Get FIPS code for state"""
@@ -137,7 +157,7 @@ class GeographicResolver:
         
         return f"({' OR '.join(conditions)})"
     
-    def build_geo_filter(self, query: str, geo_level: str, state: list) -> Dict:
+    def build_geo_filter(self, query: str, geo_level: str, state: list, geojson_dir: str) -> Dict:
         """
         Build geographic filter for BigQuery with custom bound support
         
@@ -145,95 +165,39 @@ class GeographicResolver:
             For county levels:
             {
                 'filter_sql': "geo_id LIKE '13%'",
-                'geo_level': 'county',
-                'state_name': 'georgia',
-                'state_fips': '13'
+                'state_name': 'georgia'
             }
             
             For ZCTA level:
             {
                 'filter_sql': "(geo_id BETWEEN '30001' AND '31999' OR geo_id = '39901')",
-                'geo_level': 'zcta',
-                'state_name': 'georgia',
-                'zip_ranges': ['30001-31999', '39901']
+                'state_name': 'georgia'
             }
             
             For tract level:
             {
                 'filter_sql': "geo_id LIKE '13%'",
-                'geo_level': 'tract',
-                'state_name': 'georgia',
-                'state_fips': '13'
+                'state_name': 'georgia'
             }
         """
 
-        # First check for custom boundaries
-        custom_boundary = self.boundary_handler.extract_boundary_from_query(query)
-
-        state_name = self.extract_state_from_query(query)
-        if not state_name and not custom_boundary:
-            raise ValueError(f"Could not extract state or custom boundary from query: {query}")
-        
+        state_name = self.extract_state_from_query(query, state, geojson_dir)
+        print("found state name:", state_name)
         result = {
-            'geo_level': geo_level,
-            'custom_boundary': custom_boundary
-        }
-
-        if not state_name:
-            state_name = state[0]
+                    "state_name": state_name,
+                    "filter_sql": ""
+                  }
 
         # Build filter based on geo level
         if geo_level == 'zcta':
-            if custom_boundary:
-                # For custom boundaries with ZCTA, we'll use ST_INTERSECTS
-                intersect_filter = self.boundary_handler.build_intersect_filter(custom_boundary, geo_level)
-                if intersect_filter:
-                    result['filter_sql'] = intersect_filter
-                    result['boundary_name'] = custom_boundary
-                    result['state_name'] = state_name # Still include state for context
-                    return result
-            
-            # Fallback to state-based filtering
-            zip_ranges = self.get_state_zip_ranges(state_name)
-            if not zip_ranges:
-                raise ValueError(f"Unknown state: {state_name}")
-            
-            filter_sql = self.build_zcta_filter_sql(zip_ranges)
-            
-            result.update({
-                'filter_sql': filter_sql,
-                'state_name': state_name,
-                'zip_ranges': zip_ranges
-            })
+            intersect_filter = self.boundary_handler.build_intersect_filter(geojson_dir, geo_level)
+            result['filter_sql'] = intersect_filter
+            print(result)
+            return result
         else:
             # Handle county and tract levels
-            if custom_boundary:
-                # Use ST_INTERSECTS for custom boundaries
-                intersect_filter = self.boundary_handler.build_intersect_filter(custom_boundary, geo_level)
-                if intersect_filter:
-                    # Get state for custom boundary if not already provided
-                    boundary_state = state_name or self.boundary_handler.get_state_for_boundary(custom_boundary)
-                    result['filter_sql'] = intersect_filter
-                    result['boundary_name'] = custom_boundary
-                    result['state_name'] = boundary_state
-                    return result
-            
-            # Fallback to state-based filtering
-            state_fips = self.get_state_fips(state_name)
-            if not state_fips:
-                raise ValueError(f"Unknown state: {state_name}")
-            
-            if geo_level == 'county':
-                filter_sql = f"LENGTH(geo_id) = 5 AND geo_id LIKE '{state_fips}%'"
-            elif geo_level == 'tract':
-                filter_sql = f"LENGTH(geo_id) = 11 AND geo_id LIKE '{state_fips}%'"
-            else:
-                filter_sql = f"geo_id LIKE '{state_fips}%'"
-            
-            result.update({
-                'filter_sql': filter_sql,
-                'state_name': state_name,
-                'state_fips': state_fips   
-            })
-            
-        return result
+            # Use ST_INTERSECTS for custom boundaries
+            intersect_filter = self.boundary_handler.build_intersect_filter(geojson_dir, geo_level)
+            result['filter_sql'] = intersect_filter
+            print(result)
+            return result

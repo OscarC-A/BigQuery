@@ -13,6 +13,30 @@ class CensusBigQueryClient:
     def __init__(self, project_id: Optional[str] = None):
         self.project_id = project_id or os.getenv('GCP_PROJECT_ID')
         self.client = bigquery.Client(project=self.project_id)
+
+        # Select few ACS tables to choose from (most comprehensive and commonly used)
+        self.acs_tables = {
+            'county_2020_5yr': {
+                'description': 'County-level demographic, economic, and housing data from 2020 ACS 5-year estimates',
+                'geo_level': 'county',
+                'year': 2020
+            },
+            'zcta_2020_5yr': {
+                'description': 'Zip code tabulation area-level demographic, economic, and housing data from 2020 ACS 5-year estimates', 
+                'geo_level': 'zcta',
+                'year': 2020
+            },
+            'state_2021_1yr': {
+                'description': 'State-level demographic, economic, and housing data from 2021 ACS 1-year estimates',
+                'geo_level': 'state', 
+                'year': 2021
+            },
+            'censustract_2020_5yr': {
+                'description': 'Census tract-level demographic, economic, and housing data from 2020 ACS 5-year estimates',
+                'geo_level': 'tract',
+                'year': 2020
+            }
+        }
         
     def get_acs_tables_metadata(self) -> pd.DataFrame:
         """Get metadata for all ACS tables"""
@@ -61,11 +85,16 @@ class CensusBigQueryClient:
         """
         
         print(f"Executing BigQuery:\n{query}")
-        return self.client.query(query).to_dataframe()
+        df = self.client.query(query).to_dataframe()
+        
+        # Fix data types for numeric columns
+        df = self._fix_numeric_columns(df, variables)
+        
+        return df
     
     def query_acs_with_geometry(self, table_name: str, variables: List[str], 
                                geo_filter: str, geo_level: str, 
-                               geo_info: Dict) -> gpd.GeoDataFrame:
+                               state_name: str) -> gpd.GeoDataFrame:
         """
         Query ACS data joined with geometry in a single query
         
@@ -81,7 +110,7 @@ class CensusBigQueryClient:
         """
         # Prepare ACS columns
         acs_columns = ', '.join([f'acs.{var}' for var in variables])
-        
+
         # Determine the geometry table and join conditions based on geo_level
         if geo_level == 'county':
             geo_table = 'bigquery-public-data.geo_us_boundaries.counties'
@@ -97,32 +126,18 @@ class CensusBigQueryClient:
             
         elif geo_level == 'tract':
             # For tracts, we need state-specific tables
-            state_name = geo_info.get('state_name', '').lower().replace(' ', '_')
-            if not state_name:
-                raise ValueError("State name required for tract-level queries")
-            geo_table = f'bigquery-public-data.geo_census_tracts.census_tracts_{state_name}'
+            state_name = state_name.replace(' ', '_')
+            state_name = "brute"
+            if state_name == "brute":
+                geo_table = "bigquery-public-data.geo_census_tracts.us_census_tracts_national"
+                # return self.brute_query_with_geom(table_name, variables, geo_filter, geo_level)
+            else:
+                geo_table = f'bigquery-public-data.geo_census_tracts.census_tracts_{state_name}'
             geo_id_field = 'geo_id'
             geom_field = 'tract_geom'
             join_condition = 'acs.geo_id = geo.geo_id'
         else:
             raise ValueError(f"Unsupported geo_level: {geo_level}")
-        
-        # Build the joined query
-        query = f"""
-        WITH acs_data AS (
-            SELECT geo_id, {', '.join(variables)}
-            FROM `bigquery-public-data.census_bureau_acs.{table_name}`
-            WHERE {geo_filter}
-        )
-        SELECT 
-            acs.geo_id,
-            {acs_columns},
-            ST_ASTEXT(geo.{geom_field}) as geometry_wkt,
-            geo.*
-        FROM acs_data acs
-        INNER JOIN `{geo_table}` geo
-        ON {join_condition}
-        """
         
         # If using custom boundary filter (ST_INTERSECTS), we need to modify the query
         if 'ST_INTERSECTS' in geo_filter:
@@ -161,6 +176,10 @@ class CensusBigQueryClient:
             print("Warning: Query returned no results")
             return gpd.GeoDataFrame()
         
+        # Fix data types for numeric columns
+
+        # df = self._fix_numeric_columns(df, variables)
+        
         # Convert to GeoDataFrame
         # Parse WKT geometry
         from shapely import wkt
@@ -173,33 +192,30 @@ class CensusBigQueryClient:
         gdf = gdf.drop(columns=['geometry_wkt'])
         
         return gdf
-
-    def get_geo_boundaries_tables(self) -> pd.DataFrame:
-        """Get available geo boundary tables"""
-        query = """
-        SELECT 
-            table_name,
-            table_type,
-            creation_time
-        FROM `bigquery-public-data.geo_us_boundaries.INFORMATION_SCHEMA.TABLES`
-        ORDER BY table_name
-        """
-        return self.client.query(query).to_dataframe()
     
-    def query_geo_boundaries(self, table_name: str, geo_filter: str) -> pd.DataFrame:
+    def _fix_numeric_columns(self, df: pd.DataFrame, variables: List[str]) -> pd.DataFrame:
         """
-        Legacy method - kept for backwards compatibility
-        Query geo boundary data
-        
-        Args:
-            table_name: e.g., 'counties', 'states', 'zip_codes'
-            geo_filter: e.g., "state_fips_code = '13'" for Georgia counties
+        Fix data types for numeric columns that may have been returned as strings.
+        Common numeric column patterns in ACS data that should be integers or floats.
         """
-        query = f"""
-        SELECT *
-        FROM `bigquery-public-data.geo_us_boundaries.{table_name}`
-        WHERE {geo_filter}
-        """
-        
-        print(f"Executing BigQuery geometry query:\n{query}")
-        return self.client.query(query).to_dataframe()
+        for col in variables:
+            if col in df.columns and col != "geo_id":
+                    try:
+                        # Convert to numeric, handling sentinel values and errors
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                        
+                        # Replace sentinel values with NaN
+                        sentinel_values = [-666666666, -999999999, -888888888, -777777777]
+                        df[col] = df[col].replace(sentinel_values, pd.NA)
+                        
+                        # If column name suggests it should be integer, convert to Int64 (nullable integer)
+                        if any(pattern in col.lower() for pattern in ['pop', 'units', 'households', 'families']):
+                            df[col] = df[col].astype('Int64')
+                        else:
+                            # Keep as float for income, age, etc.
+                            df[col] = df[col].astype('Float64')
+                            
+                    except Exception as e:
+                        print(f"Warning: Could not convert {col} to numeric: {e}")
+                        
+        return df
