@@ -305,9 +305,9 @@ Choose column names that directly answer the user's query."""
                     min_lat, max_lat, min_lon, max_lon = bound_box
 
                     # Create rectangle coordinates (counter-clockwise) bottom-left bottom-right top-right top-left
-                    coordinates = [[min_lon, min_lat], [max_lon, min_lat], 
-                                   [max_lon, max_lat], [min_lon, max_lat],  
-                                   [min_lon, min_lat] ]
+                    coordinates = [[min_lat, min_lon], [max_lat, min_lon], 
+                                   [max_lat, max_lon], [min_lat, max_lon],  
+                                   [min_lat, min_lon] ]
                     geo = {"type": "Polygon",
                                            "coordinates": [coordinates]}
                     print(geo)
