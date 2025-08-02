@@ -297,12 +297,12 @@ Choose column names that directly answer the user's query."""
                 bound_box = itm["boundingbox"] # Ex: ["40.5503390","40.7394340","-74.0566880","-73.8329450"]
 
                 # Create GeoJSON file
-                if geom["type"] == 'point':
+                if geom["type"] == 'Point':
                     # We can use the given bounding box, or use the lat lon coords and create a bound
                     # of some size or radius. Using bounding box for now, radius that user could set would
                     # be cool to implement later
                     
-                    min_lon, max_lon, min_lat, max_lat = bound_box
+                    min_lat, max_lat, min_lon, max_lon = bound_box
 
                     # Create rectangle coordinates (counter-clockwise) bottom-left bottom-right top-right top-left
                     coordinates = [[min_lon, min_lat], [max_lon, min_lat], 
