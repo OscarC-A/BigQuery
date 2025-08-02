@@ -297,7 +297,7 @@ Choose column names that directly answer the user's query."""
                 bound_box = itm["boundingbox"] # Ex: ["40.5503390","40.7394340","-74.0566880","-73.8329450"]
 
                 # Create GeoJSON file
-                if True:#geom["type"] == 'point':
+                if geom["type"] == 'point':
                     # We can use the given bounding box, or use the lat lon coords and create a bound
                     # of some size or radius. Using bounding box for now, radius that user could set would
                     # be cool to implement later
