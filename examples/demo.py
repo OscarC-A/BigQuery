@@ -34,7 +34,7 @@ async def main(geojson_file=None):
     
     # Example queries
     queries = [
-        "Show black population by census tract in the bronx",
+        "Show black population by census tract in tribeca",
         #"Show median income by county in california", 
         #"Show education levels in harris county texas"
     ]

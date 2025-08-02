@@ -301,13 +301,18 @@ Choose column names that directly answer the user's query."""
                     # We can use the given bounding box, or use the lat lon coords and create a bound
                     # of some size or radius. Using bounding box for now, radius that user could set would
                     # be cool to implement later
+                    print("its a point")
                     
                     min_lat, max_lat, min_lon, max_lon = bound_box
+                    min_lat = float(min_lat)
+                    max_lat = float(max_lat)
+                    min_lon = float(min_lon)
+                    max_lon = float(max_lon)
 
                     # Create rectangle coordinates (counter-clockwise) bottom-left bottom-right top-right top-left
-                    coordinates = [[min_lat, min_lon], [max_lat, min_lon], 
-                                   [max_lat, max_lon], [min_lat, max_lon],  
-                                   [min_lat, min_lon] ]
+                    coordinates = [[min_lon, min_lat], [max_lon, min_lat], 
+                                   [max_lon, max_lat], [min_lon, max_lat],  
+                                   [min_lon, min_lat] ]
                     geo = {"type": "Polygon",
                                            "coordinates": [coordinates]}
                     print(geo)
