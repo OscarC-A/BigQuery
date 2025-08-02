@@ -111,6 +111,10 @@ class CensusBigQueryClient:
         # Prepare ACS columns
         acs_columns = ', '.join([f'acs.{var}' for var in variables])
 
+        # Prevent geojson being read as having 4 layers
+        geo_columns = ', '.join([f'geo.{col}' for col in ['state_name', 'state_fips_code', 'county_fips_code', 'tract_ce', 'tract_name', 'lsad_name', 'functional_status', 'area_land_meters', 'area_water_meters', 'internal_point_lat', 'internal_point_lon']]) # 'internal_point_geo'
+
+
         # Determine the geometry table and join conditions based on geo_level
         if geo_level == 'county':
             geo_table = 'bigquery-public-data.geo_us_boundaries.counties'
@@ -161,7 +165,7 @@ class CensusBigQueryClient:
                 acs.geo_id,
                 {acs_columns},
                 ST_ASTEXT(geo.{geom_field}) as geometry_wkt,
-                geo.*
+                {geo_columns}
             FROM acs_data acs
             INNER JOIN boundary_filtered_geo geo
             ON {join_condition}
