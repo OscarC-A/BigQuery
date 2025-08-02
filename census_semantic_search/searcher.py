@@ -6,6 +6,8 @@ import json
 from typing import List, Dict, Optional, Tuple
 import re
 import geopandas as gpd
+import httpx
+from urllib.parse import quote
 
 # Main query processor
 
@@ -136,8 +138,9 @@ Return a JSON object with:
     "state": "[list of state or states encompassing the point of interest]"
 }}
 
-Note that "point_of_interest" should just be the name of the location or area that the query is interested in.
-This may be an entire state, a specific county, a metro area, or a city, for example.
+For "point_of_interest", extract the geographic location name from this query for boundary extraction.
+Return the most specific location mentioned (city, county, state, etc.).
+If multiple locations, return the most relevant one. Return only the location name, nothing else.
 "state" is the state or states that the point of interest lies within. For example, if the point of
 interest is manhattan, the state would be ["new york"]. It is CRUCIAL that you do not hallucinate or make an 
 unsure guess for what the "state" is. If you do not know, or are not absolutely sure, return an empty list.
@@ -249,9 +252,94 @@ Choose column names that directly answer the user's query."""
                 "selected_table": table_name,
                 "reasoning": "Fallback selection due to parsing error"
             }
+        
+    async def extract_boundary_from_query(self, query: str, intent=None) -> Optional[str]:
+        """Extract geographic boundary from query using Nominatim, save as GeoJSON file"""
+        try:
+            # Extract location using existing LLM method
+            place_str = intent['point_of_interest']
+            if not place_str:
+                return None
+            
+            print(f"🌍 Getting boundary for: '{place_str}'")
+            
+            # Query Nominatim for boundary
+            async with httpx.AsyncClient(headers={"User-Agent": "CensusSemanticSearch/1.0"}) as client:
+                url = (
+                    "https://nominatim.openstreetmap.org/search"
+                    f"?q={quote(place_str)}&format=jsonv2&polygon_geojson=1&limit=1"
+                )
+                print(f"Querying Nominatim API...")
+                r = await client.get(url, timeout=20)
+                r.raise_for_status()
+                items = r.json()
+                
+                if not items:
+                    print(f"   No boundary found for '{place_str}'")
+                    return None
+                    
+                itm = items[0]
+                osm_id   = int(itm["osm_id"])
+                osm_type = itm["osm_type"]
+                geom     = itm.get("geojson")  # may be None
+                print(geom)
+                # poly_str = _poly_from_geojson(geom) if geom else ""
+                geo = itm['geojson']
+                print(geo)
+                print(f"   Found: {itm['display_name']}")
+                print(f"   OSM ID: {osm_id} ({osm_type})")
+
+                # Get coordinates for around queries
+                lat = float(itm["lat"])
+                lon = float(itm["lon"])
+
+                # Get bounding box for square area
+                bound_box = itm["boundingbox"] # Ex: ["40.5503390","40.7394340","-74.0566880","-73.8329450"]
+
+                # Create GeoJSON file
+                if True:#geom["type"] == 'point':
+                    # We can use the given bounding box, or use the lat lon coords and create a bound
+                    # of some size or radius. Using bounding box for now, radius that user could set would
+                    # be cool to implement later
+                    
+                    min_lon, max_lon, min_lat, max_lat = bound_box
+
+                    # Create rectangle coordinates (counter-clockwise) bottom-left bottom-right top-right top-left
+                    coordinates = [[min_lon, min_lat], [max_lon, min_lat], 
+                                   [max_lon, max_lat], [min_lon, max_lat],  
+                                   [min_lon, min_lat] ]
+                    geo = {"type": "Polygon",
+                                           "coordinates": [coordinates]}
+                    print(geo)
+
+                geojson_data = {
+                    "type": "FeatureCollection",
+                    "features": [{
+                        "type": "Feature",
+                        "geometry": geo,
+                        "properties": {
+                            "name": place_str,
+                            "display_name": items[0]['display_name']
+                        }
+                    }]
+                }
+                
+                # Save to temporary file
+                import tempfile
+                import json
+                temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.geojson', delete=False)
+                json.dump(geojson_data, temp_file, indent=2)
+                temp_file.close()
+                
+                print(f"   Boundary saved to: {temp_file.name}")
+                return temp_file.name
+            
+        except Exception as e:
+            print(f"   Error extracting boundary: {e}")
+            return None
     
-    async def process_query(self, query: str, geojson_dir) -> Tuple[gpd.GeoDataFrame, dict, dict]:
-        """Main pipeline using the new approach: select table first, then all columns, then LLM selection"""
+    async def process_query(self, query: str, geojson_dir=None) -> Tuple[gpd.GeoDataFrame, dict, dict]:
+        """Main pipeline with automatic boundary extraction if no geojson_dir provided"""
         print(f"\n🔍 Processing query: '{query}'")
         
         # 1. Analyze intent
@@ -259,28 +347,35 @@ Choose column names that directly answer the user's query."""
         intent = await self.analyze_query_intent(query)
         print(f"Intent: {intent}")
         
-        # 2. Select best table from our predefined list
+        # 2. Extract boundary if not provided
+        if not geojson_dir:
+            print("🗺️ No boundary provided, attempting to extract from query...")
+            geojson_dir = await self.extract_boundary_from_query(query, intent)
+            if geojson_dir:
+                print(f"✅ Auto-extracted boundary: {geojson_dir}")
+            else:
+                print("⚠️ Could not extract boundary, using state-based filtering")
+        
+        # 3. Select best table from our predefined list
         print("🎯 Selecting best ACS table...")
         selected_table = await self.select_best_table(query, intent)
         
-        # 3. Get ALL columns from the selected table
+        # 4. Get ALL columns from the selected table
         print("📋 Getting all columns from selected table...")
         all_columns = self.get_all_table_columns(selected_table)
         
-        # 4. Let LLM choose the best subset of columns
+        # 5. Let LLM choose the best subset of columns
         print("🤖 LLM selecting best columns...")
         selection = await self.select_best_columns(query, intent, selected_table, all_columns)
         print(f"Selected: {len(selection['selected_variables'])} variables from {selected_table}: {selection['selected_variables']}")
         
-        # 5. Build geographic filter
+        # 6. Build geographic filter
         print("🗺️ Building geographic filter...")
         geo_filter = self.geo_resolver.build_geo_filter(query, intent['geo_level'], intent['state'], geojson_dir)
-        #print(f"Filter: {geo_filter['filter_sql']}")
         
-        # 6. Query BigQuery
+        # 7. Query BigQuery
         print("📊 Querying BigQuery...")
         try:
-            # Using custom geo bounds
             gdf = self.bq_client.query_acs_with_geometry(
                 selection['selected_table'],
                 selection['selected_variables'],
@@ -291,7 +386,16 @@ Choose column names that directly answer the user's query."""
 
             print(f"✅ Retrieved {len(gdf)} features with {len(selection['selected_variables'])} variables and geometries")
             
-            # Return GeoDataFrame directly
+            # Clean up temporary boundary file if we created one
+            if geojson_dir and geojson_dir.startswith('/tmp'):
+                import os
+                try:
+                    os.unlink(geojson_dir)
+                    print(f"🧹 Cleaned up temporary boundary file")
+                except:
+                    pass
+            
             return gdf, geo_filter, selection
         except Exception as e:
             print(f"❌ Error in combined query: {str(e)}")
+            raise
