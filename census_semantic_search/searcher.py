@@ -1,5 +1,3 @@
-import pandas as pd
-import numpy as np
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 import json
@@ -140,13 +138,15 @@ Return a JSON object with:
     "state": "[list of state or states encompassing the point of interest]"
 }}
 
-For "point_of_interest", extract the geographic location name from this query for boundary extraction.
-Return the most specific location mentioned (city, county, state, etc.).
-If multiple locations, return the most relevant one. Return only the location name, nothing else.
-"state" is the state or states that the point of interest lies within. For example, if the point of
-interest is manhattan, the state would be ["new york"]. It is CRUCIAL that you do not hallucinate or make an 
-unsure guess for what the "state" is. If you do not know, or are not absolutely sure, return an empty list.
-Focus on what census data the user wants to see."""
+1) For "point_of_interest", extract the geographic location name from this query for boundary extraction.
+   Return the most specific location mentioned (city, county, state, metro area, etc.). 
+   If multiple locations, return the most relevant one. Return only the location name, nothing else.
+2) "state" is the state or states that the point of interest lies within. For example, if the point of
+   interest is manhattan, the state would be ["new york"]. 
+3) It is CRUCIAL that you do not hallucinate or make an unsure guess for what the "state" or "point_of_interest" is. 
+   If you do not know, or are not absolutely sure, return an empty list.
+4) Be forgiving towards potential typos. If someone types ".. in Itaca", it is fair to assume that the point of interest should be "Ithaca"
+5) Focus on what census data the user wants to see."""
 
         response = self.openai_client.chat.completions.create(
             model="gpt-4o-mini",

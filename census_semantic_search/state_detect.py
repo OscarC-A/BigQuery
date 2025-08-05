@@ -1,7 +1,7 @@
 import json
 import os
 from typing import Optional, List, Dict, Union
-from shapely.geometry import shape, Point, Polygon, MultiPolygon
+from shapely.geometry import shape
 import geopandas as gpd
 from collections import Counter
 
@@ -123,7 +123,7 @@ class StateDetector:
         
         # First check if name of state is in query. If not, examine for state is geojson file. Then, fall back to 
         # llm interpretation in analyzequeryintent. Finally, fall back to querying every table for geom.
-        for state_name, fips in self.state_names():
+        for state_name in self.state_names:
             if state_name in query_lower:
                 return state_name
             elif state == "":
