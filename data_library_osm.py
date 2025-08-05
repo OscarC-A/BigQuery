@@ -29,6 +29,24 @@ from pydantic import BaseModel, Field
 from .base import Tool
 import sys
 
+
+def json_serializable(obj):
+    """Convert numpy types to JSON serializable Python types."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (pd.Series, pd.DataFrame)):
+        return obj.to_dict()
+    elif isinstance(obj, dict):
+        return {k: json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [json_serializable(item) for item in obj]
+    else:
+        return obj
+
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
@@ -1212,7 +1230,7 @@ def _insert_default_styling(conn, project_id: str, parent_id: str, layer_type: s
             parent_id,
             json.dumps(default_payload),
             json.dumps([]),  # Empty filters array
-            json.dumps(metadata) if metadata else None
+            json.dumps(json_serializable(metadata)) if metadata else None
         ))
         
         conn.commit()

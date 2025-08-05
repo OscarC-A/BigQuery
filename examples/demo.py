@@ -34,7 +34,7 @@ async def main(geojson_file=None):
     
     # Example queries
     queries = [
-        "Show black population by census tract in tribeca",
+        "Get me median income by census tract in Manhattan",
         #"Show median income by county in california", 
         #"Show education levels in harris county texas"
     ]
@@ -46,7 +46,7 @@ async def main(geojson_file=None):
         
         try:
             # Process query - now auto-extracts boundaries if no file provided
-            result, geo_info, selection = await searcher.process_query(query, geojson_file)
+            result, selection = await searcher.process_query(query, geojson_file)
             
             # Check if we got a GeoDataFrame
             if hasattr(result, 'geometry'):

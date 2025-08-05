@@ -77,7 +77,9 @@ class CensusSemanticSearcher:
         else:
             # Fallback based on geo level
             geo_level = intent.get('geo_level', 'county')
-            if geo_level == 'county':
+            if geo_level == 'congressional_district':
+                return 'congressionaldistrict_2020_5yr'
+            elif geo_level == 'county':
                 return 'county_2020_5yr'
             elif geo_level == 'zcta':
                 return 'zcta_2020_5yr'
@@ -129,7 +131,7 @@ Query: "{query}"
 
 Return a JSON object with:
 {{
-    "geo_level": "state|county|zcta|tract",
+    "geo_level": "state|congressional_district|county|zcta|tract",
     "point_of_interest": "texas, new york city, tompkins county, deleware, etc."
     "topics": ["list of topics like race, income, housing, etc."],
     "specific_variables": ["any specific variables mentioned"],
@@ -301,7 +303,6 @@ Choose column names that directly answer the user's query."""
                     # We can use the given bounding box, or use the lat lon coords and create a bound
                     # of some size or radius. Using bounding box for now, radius that user could set would
                     # be cool to implement later
-                    print("its a point")
                     
                     min_lat, max_lat, min_lon, max_lon = bound_box
                     min_lat = float(min_lat)
@@ -374,9 +375,9 @@ Choose column names that directly answer the user's query."""
         selection = await self.select_best_columns(query, intent, selected_table, all_columns)
         print(f"Selected: {len(selection['selected_variables'])} variables from {selected_table}: {selection['selected_variables']}")
         
-        # 6. Build geographic filter
+        # 6. Build geographic filter and extract state
         print("🗺️ Building geographic filter...")
-        geo_filter = self.geo_resolver.build_geo_filter(query, intent['geo_level'], intent['state'], geojson_dir)
+        state_name = self.geo_resolver.extract_state_from_query(query, intent['state'], geojson_dir)
         
         # 7. Query BigQuery
         print("📊 Querying BigQuery...")
@@ -384,9 +385,9 @@ Choose column names that directly answer the user's query."""
             gdf = self.bq_client.query_acs_with_geometry(
                 selection['selected_table'],
                 selection['selected_variables'],
-                geo_filter['filter_sql'],
                 intent['geo_level'],
-                geo_filter['state_name']
+                geojson_dir,
+                state_name
             )
 
             print(f"✅ Retrieved {len(gdf)} features with {len(selection['selected_variables'])} variables and geometries")
@@ -400,7 +401,7 @@ Choose column names that directly answer the user's query."""
                 except:
                     pass
             
-            return gdf, geo_filter, selection
+            return gdf, selection
         except Exception as e:
             print(f"❌ Error in combined query: {str(e)}")
             raise

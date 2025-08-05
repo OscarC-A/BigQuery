@@ -8,9 +8,11 @@ from google.cloud import bigquery
 from typing import List, Dict, Optional
 import pandas as pd
 import geopandas as gpd
+from shapely.geometry import shape
+import json
 
 class CensusBigQueryClient:
-    def __init__(self, project_id: Optional[str] = None):
+    def __init__(self, project_id: Optional[str] = None, boundaries_dir: str = "custom_boundaries"):
         self.project_id = project_id or os.getenv('GCP_PROJECT_ID')
         self.client = bigquery.Client(project=self.project_id)
 
@@ -38,6 +40,35 @@ class CensusBigQueryClient:
             }
         }
         
+    def load_boundary(self, geojson_dir: str) -> Optional[Dict]:
+        """Load a custom boundary from GeoJSON file"""
+            
+        # Try to find the boundary file
+        boundary_file = os.path.join("", f"{geojson_dir}")
+        if not os.path.exists(boundary_file):
+            # Also check in examples folder
+            boundary_file = os.path.join("custom_boundaries", f"{geojson_dir.lower()}")
+            if not os.path.exists(boundary_file):
+                print("could not find file")
+                return None
+                
+        with open(boundary_file, 'r') as f:
+            geojson_data = json.load(f)
+            
+        # Extract the geometry
+        if geojson_data['type'] == 'FeatureCollection':
+            # Get the first feature's geometry
+            geometry = geojson_data['features'][0]['geometry']
+        else:
+            geometry = geojson_data
+            
+        boundary_data = {
+            'geometry': geometry,
+            'geojson': geojson_data
+        }
+        
+        return boundary_data
+
     def get_acs_tables_metadata(self) -> pd.DataFrame:
         """Get metadata for all ACS tables"""
         query = """
@@ -64,37 +95,9 @@ class CensusBigQueryClient:
         """
         return self.client.query(query).to_dataframe()
     
-    def query_acs_data(self, table_name: str, variables: List[str], 
-                      geo_filter: str) -> pd.DataFrame:
-        """
-        Legacy method - kept for backwards compatibility
-        Query specific ACS data within just a singluar states' bounds
-        
-        Args:
-            table_name: e.g., 'county_2020_5yr'
-            variables: List of actual column names (not variable codes)
-            geo_filter: e.g., "geo_id LIKE '13%'" for Georgia counties
-        """
-        var_list = ['geo_id'] + variables
-        columns = ', '.join(var_list)
-        
-        query = f"""
-        SELECT {columns}
-        FROM `bigquery-public-data.census_bureau_acs.{table_name}`
-        WHERE {geo_filter}
-        """
-        
-        print(f"Executing BigQuery:\n{query}")
-        df = self.client.query(query).to_dataframe()
-        
-        # Fix data types for numeric columns
-        df = self._fix_numeric_columns(df, variables)
-        
-        return df
-    
-    def query_acs_with_geometry(self, table_name: str, variables: List[str], 
-                               geo_filter: str, geo_level: str, 
-                               state_name: str) -> gpd.GeoDataFrame:
+    def query_acs_with_geometry(self, table_name: str, variables: List[str],
+                                  geo_level: str, 
+                                geojson_dir: str, state_name: str,) -> gpd.GeoDataFrame:
         """
         Query ACS data joined with geometry in a single query
         
@@ -112,11 +115,29 @@ class CensusBigQueryClient:
         acs_columns = ', '.join([f'acs.{var}' for var in variables])
 
         # Prevent geojson being read as having 4 layers
-        geo_columns = ', '.join([f'geo.{col}' for col in ['state_name', 'state_fips_code', 'county_fips_code', 'tract_ce', 'tract_name', 'lsad_name', 'functional_status', 'area_land_meters', 'area_water_meters', 'internal_point_lat', 'internal_point_lon']]) # 'internal_point_geo'
+        # geo_columns = ', '.join([f'geo.{col}' for col in ['state_name', 'state_fips_code', 'county_fips_code', 'tract_ce', 'tract_name', 'lsad_name', 'functional_status', 'area_land_meters', 'area_water_meters', 'internal_point_lat', 'internal_point_lon']]) # 'internal_point_geo'
 
+        # Create shapely geometry from the GeoJSON
+        boundary_data = self.load_boundary(str(geojson_dir))
+        if boundary_data is None:
+            raise FileNotFoundError(f"Could not load boundary file: {geojson_dir}")
+        wkt = shape(boundary_data['geometry']).wkt
 
         # Determine the geometry table and join conditions based on geo_level
-        if geo_level == 'county':
+        if geo_level == 'state':
+            geo_table = 'bigquery-public-data.geo_us_boundaries.states'
+            geo_id_field = 'geo_id'
+            geom_field = 'state_geom'
+            join_condition = 'acs.geo_id = geo.geo_id'
+
+        # CAREFUL: BigQuery only has geom as of the 116th Congress
+        elif geo_level =='congressional_district':
+            geo_table = 'bigquery-public-data.geo_us_boundaries.congress_district_116'
+            geo_id_field = 'geo_id'
+            geom_field = 'district_geom'
+            join_condition = 'acs.geo_id = geo.geo_id'
+
+        elif geo_level == 'county':
             geo_table = 'bigquery-public-data.geo_us_boundaries.counties'
             geo_id_field = 'geo_id'
             geom_field = 'county_geom'
@@ -127,14 +148,13 @@ class CensusBigQueryClient:
             geo_id_field = 'zip_code'
             geom_field = 'zip_code_geom'
             join_condition = 'acs.geo_id = geo.zip_code'
-            
+
         elif geo_level == 'tract':
             # For tracts, we need state-specific tables
             state_name = state_name.replace(' ', '_')
-            state_name = "brute"
+            # state_name = "brute"
             if state_name == "brute":
                 geo_table = "bigquery-public-data.geo_census_tracts.us_census_tracts_national"
-                # return self.brute_query_with_geom(table_name, variables, geo_filter, geo_level)
             else:
                 geo_table = f'bigquery-public-data.geo_census_tracts.census_tracts_{state_name}'
             geo_id_field = 'geo_id'
@@ -143,33 +163,29 @@ class CensusBigQueryClient:
         else:
             raise ValueError(f"Unsupported geo_level: {geo_level}")
         
-        # If using custom boundary filter (ST_INTERSECTS), we need to modify the query
-        if 'ST_INTERSECTS' in geo_filter:
-            # Extract the boundary WKT from the filter
-            # The filter will be like: ST_INTERSECTS(county_geom, ST_GEOGFROMTEXT('...'))
-            query = f"""
-            WITH boundary_filtered_geo AS (
-                SELECT *
-                FROM `{geo_table}`
-                WHERE {geo_filter}
-            ),
-            acs_data AS (
-                SELECT geo_id, {', '.join(variables)}
-                FROM `bigquery-public-data.census_bureau_acs.{table_name}`
-                WHERE geo_id IN (
-                    SELECT {geo_id_field} 
-                    FROM boundary_filtered_geo
-                )
+        query = f"""
+        WITH boundary_filtered_geo AS (
+            SELECT *
+            FROM `{geo_table}`
+            WHERE ST_INTERSECTS({geom_field}, ST_GEOGFROMTEXT('{wkt}'))
+        ),
+        acs_data AS (
+            SELECT geo_id, {', '.join(variables)}
+            FROM `bigquery-public-data.census_bureau_acs.{table_name}`
+            WHERE geo_id IN (
+                SELECT {geo_id_field} 
+                FROM boundary_filtered_geo
             )
-            SELECT 
-                acs.geo_id,
-                {acs_columns},
-                ST_ASTEXT(geo.{geom_field}) as geometry_wkt,
-                {geo_columns}
-            FROM acs_data acs
-            INNER JOIN boundary_filtered_geo geo
-            ON {join_condition}
-            """
+        )
+        SELECT 
+            acs.geo_id,
+            {acs_columns},
+            ST_ASTEXT(geo.{geom_field}) as geometry_wkt,
+            geo.*
+        FROM acs_data acs
+        INNER JOIN boundary_filtered_geo geo
+        ON {join_condition}
+        """
         
         print(f"Executing combined ACS + Geometry query:\n{query[:500]}...")
         
