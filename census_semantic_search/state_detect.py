@@ -110,6 +110,36 @@ class StateDetector:
             'tampa': 'florida',
             'orlando': 'florida'
         }
+
+    def extract_state_from_query(self, query: str, intent_state: list, geojson_dir: str) -> Optional[str]:
+        """Extract state name from query"""
+        query_lower = query.lower()
+        
+        # Check for DC aliases first
+        if any(dc_term in query_lower for dc_term in ['washington dc', 'washington d.c.', 'dc', 'district of columbia', 'd.c.']):
+            return 'district of columbia'
+        
+        state = ""
+        
+        # First check if name of state is in query. If not, examine for state is geojson file. Then, fall back to 
+        # llm interpretation in analyzequeryintent. Finally, fall back to querying every table for geom.
+        for state_name, fips in self.state_names():
+            if state_name in query_lower:
+                return state_name
+            elif state == "":
+                state = self.find_state_in_geojson(geojson_dir)
+                if state != "":
+                    return state
+            elif state == "" and intent_state != []:
+                if intent_state[0] in self.state_fips:
+                    state = intent_state[0]
+                    return state
+            else:
+                # No state found, use brute force method
+                state = "brute"
+                return state
+    
+        return state
     
     def find_state_in_geojson(self, geojson_path: str) -> Optional[str]:
         """

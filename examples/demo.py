@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from census_semantic_search import (
     CensusBigQueryClient,
     ACSMetadataIndexer,
-    GeographicResolver,
+    StateDetector,
     CensusSemanticSearcher
 )
 
@@ -27,10 +27,10 @@ async def main(geojson_file=None):
     
     bq_client = CensusBigQueryClient()
     indexer = ACSMetadataIndexer()
-    geo_resolver = GeographicResolver()
+    state_detector = StateDetector()
     
     # Create searcher
-    searcher = CensusSemanticSearcher(indexer, geo_resolver, bq_client)
+    searcher = CensusSemanticSearcher(indexer, state_detector, bq_client)
     
     # Example queries
     queries = [

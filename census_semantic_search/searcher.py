@@ -18,9 +18,9 @@ from urllib.parse import quote
 # 4. Feed all columns to LLM to choose the best subset (could be a LOT easier on chat if we didnt feed all column names)
 
 class CensusSemanticSearcher:
-    def __init__(self, indexer, geo_resolver, bq_client):
+    def __init__(self, indexer, state_detect, bq_client):
         # self.indexer = indexer
-        self.geo_resolver = geo_resolver
+        self.state_detect = state_detect
         self.bq_client = bq_client
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         self.openai_client = OpenAI()
@@ -376,8 +376,8 @@ Choose column names that directly answer the user's query."""
         print(f"Selected: {len(selection['selected_variables'])} variables from {selected_table}: {selection['selected_variables']}")
         
         # 6. Build geographic filter and extract state
-        print("🗺️ Building geographic filter...")
-        state_name = self.geo_resolver.extract_state_from_query(query, intent['state'], geojson_dir)
+        print("🗺️ Extracting state")
+        state_name = self.state_detect.extract_state_from_query(query, intent['state'], geojson_dir)
         
         # 7. Query BigQuery
         print("📊 Querying BigQuery...")
