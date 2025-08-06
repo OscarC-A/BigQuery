@@ -34,8 +34,8 @@ async def main(geojson_file=None):
     
     # Example queries
     queries = [
-        "Get me median income by county in Conneticut",
-        #"Show median income by county in california", 
+        #"Get me median income by zip code in Manhattan",
+        "Show total population by cencus tract in Manhattan from 2011 to 2020", 
         #"Show education levels in harris county texas"
     ]
     

@@ -23,68 +23,57 @@ class CensusSemanticSearcher:
         self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
         self.openai_client = OpenAI()
         
-    async def select_best_table(self, query: str, intent: Dict) -> str:
-        # A lot below is commented out, as llm not needed to select best table at this point, we are just
-        # finding the best table based on our geo_level for now. Hard coded tables found in 
-        # CensusBigQueryClient class
-
-#        """Step 1: Select the most relevant ACS table from our predefined list"""
-#         table_descriptions = []
-#         for table_name, metadata in self.acs_tables.items():
-#             table_descriptions.append(
-#                 f"- {table_name}: {metadata['description']} (Geographic level: {metadata['geo_level']}, Year: {metadata['year']})"
-#             )
-        
-#         table_list = "\n".join(table_descriptions)
-#         prompt = f"""Select the most relevant ACS table for this query from the provided options.
-
-# Query: "{query}"
-# Intent: {json.dumps(intent)}
-
-# Available ACS Tables:
-# {table_list}
-
-# Return a JSON object:
-# {{
-#     "selected_table": "county_2020_5yr",
-#     "reasoning": "why this table was selected"
-# }}
-
-# SELECTION GUIDELINES:
-# 1. Match the geographic level from intent: {intent.get('geo_level', 'county')}
-# 2. Prefer recent years unless user specifies otherwise
-# 3. For state, county, zip, or tract-level queries, choose from state, county, zcta, censustract tables respectively
-# 4. Consider the comprehensiveness - all these tables contain demographic, economic, and housing data"""
-
-#         response = self.openai_client.chat.completions.create(
-#             model="gpt-4o-mini",
-#             messages=[{"role": "user", "content": prompt}],
-#             temperature=0
-#         )
-        
-#         content = response.choices[0].message.content
-#         json_match = re.search(r'\{.*\}', content, re.DOTALL)
-        
-        # Line below should be 'if json_match' but set to false for now as we can just 
-        # match on geo_level alone
-        if False:
-            result = json.loads(json_match.group(0))
-            selected_table = result.get('selected_table', 'county_2020_5yr')
-            print(f"Selected table: {selected_table} - {result.get('reasoning', '')}")
-            return selected_table
+    def _get_default_table(self, geo_level: str) -> str:
+        # Fallback based on geo level
+        if geo_level == 'congressional_district':
+            return 'congressionaldistrict_2020_5yr'
+        elif geo_level == 'county':
+            return 'county_2020_5yr'
+        elif geo_level == 'zcta':
+            return 'zcta_2020_5yr'
+        elif geo_level == 'tract':
+            return 'censustract_2020_5yr'
         else:
-            # Fallback based on geo level
-            geo_level = intent.get('geo_level', 'county')
-            if geo_level == 'congressional_district':
-                return 'congressionaldistrict_2020_5yr'
-            elif geo_level == 'county':
-                return 'county_2020_5yr'
-            elif geo_level == 'zcta':
-                return 'zcta_2020_5yr'
-            elif geo_level == 'tract':
-                return 'censustract_2020_5yr'
-            else:
-                return 'state_2021_1yr'
+            return 'state_2021_1yr'
+        
+    async def select_best_tables(self, query: str, intent: Dict) -> List[str]:
+        """Select best tables based on intent, including multiple years if needed"""
+        geo_level = intent.get('geo_level', 'county')
+        years = intent.get('years')
+        comparison_type = intent.get('comparison_type', 'none')
+        
+        # Get available tables dynamically
+        available_tables = self.bq_client.get_available_acs_tables(geo_level, years)
+        print(f"Available tables {available_tables}")
+        if not available_tables:
+            # Fallback to default table
+            print("Defaulting to default table")
+            return [self._get_default_table(geo_level)]
+        
+        # If comparing years, select tables for each year
+        if comparison_type in ['year_over_year', 'between_years'] and years and len(years) > 1:
+            selected_tables = []
+            for year in years:
+                # Find best table for each year (prefer 5yr over 1yr for consistency)
+                year_tables = [t for t in available_tables if t['year'] == year]
+                if year_tables:
+                    # Prefer 5yr surveys for better coverage
+                    five_yr = [t for t in year_tables if '5yr' in t.get('survey_type', '')]
+                    if five_yr:
+                        selected_tables.append(five_yr[0]['table_name'])
+                    else:
+                        selected_tables.append(year_tables[0]['table_name'])
+            return selected_tables
+        else:
+            # Single year or latest - return most recent table
+            if available_tables:
+                # Prefer 5yr surveys
+                five_yr = [t for t in available_tables if '5yr' in t.get('survey_type', '')]
+                if five_yr:
+                    return [five_yr[0]['table_name']]
+                return [available_tables[0]['table_name']]
+        
+        return [self._get_default_table(geo_level)]
     
     def get_all_table_columns(self, table_name: str) -> List[Dict]:
         """Step 2: Get ALL columns from the selected table"""
@@ -133,7 +122,8 @@ Return a JSON object with:
     "point_of_interest": "texas, new york city, tompkins county, deleware, etc."
     "topics": ["list of topics like race, income, housing, etc."],
     "specific_variables": ["any specific variables mentioned"],
-    "year_preference": "latest|specific year|null",
+    "years": [2020, 2019],  // Extract specific years mentioned or inferred from query
+    "comparison_type": "none|year_over_year|between_years",  // Detect if comparing across years
     "aggregation": "none|sum|average|percentage",
     "state": "[list of state or states encompassing the point of interest]"
 }}
@@ -143,10 +133,16 @@ Return a JSON object with:
    If multiple locations, return the most relevant one. Return only the location name, nothing else.
 2) "state" is the state or states that the point of interest lies within. For example, if the point of
    interest is manhattan, the state would be ["new york"]. 
-3) It is CRUCIAL that you do not hallucinate or make an unsure guess for what the "state" or "point_of_interest" is. 
-   If you do not know, or are not absolutely sure, return an empty list.
+3) It is CRUCIAL that you do not hallucinate or make an unsure guess for what "state", "point_of_interest" or 
+   any other field is. If you do not know, or are not absolutely sure, return an empty list.
 4) Be forgiving towards potential typos. If someone types ".. in Itaca", it is fair to assume that the point of interest should be "Ithaca"
-5) Focus on what census data the user wants to see."""
+5) If user mentions "change from X to Y" or "between X and Y", set comparison_type appropriately. If there are multipule years,
+   but you are unsure what comparison_type it is, default to between_years.
+6) Extract the years mentioned (e.g., "from 2010 to 2020" → years: [2010, 2020]). If it is a year over year query, 
+   then include all years between the first and last. If it is between years, when just return the 2 years.
+   There is no data past 2021, that is the most recent year you can return.
+7) If the query does not contain a specific year(s), use years: [2021, 2020] (most recent available)
+8) Focus on what census data the user wants to see."""
 
         response = self.openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -165,9 +161,11 @@ Return a JSON object with:
             # Fallback
             return {
                 "geo_level": "county",
+                "point of interest": "none",
                 "topics": ["demographics"],
                 "specific_variables": [],
-                "year_preference": "latest",
+                "years": None,
+                "comparison_type": "none",
                 "aggregation": "none",
                 "state": "unknown"
             }
@@ -284,10 +282,10 @@ Choose column names that directly answer the user's query."""
                 osm_id   = int(itm["osm_id"])
                 osm_type = itm["osm_type"]
                 geom     = itm.get("geojson")  # may be None
-                print(geom)
+                # print(geom)
                 # poly_str = _poly_from_geojson(geom) if geom else ""
                 geo = itm['geojson']
-                print(geo)
+                # print(geo)
                 print(f"   Found: {itm['display_name']}")
                 print(f"   OSM ID: {osm_id} ({osm_type})")
 
@@ -362,33 +360,46 @@ Choose column names that directly answer the user's query."""
             else:
                 print("⚠️ Could not extract boundary, using state-based filtering")
         
-        # 3. Select best table from our predefined list
-        print("🎯 Selecting best ACS table...")
-        selected_table = await self.select_best_table(query, intent)
-        
-        # 4. Get ALL columns from the selected table
+        # 3. Select best tables from our predefined list
+        print("🎯 Selecting best ACS table(s)...")
+        selected_tables = await self.select_best_tables(query, intent)
+        print(f"Selected tables: {selected_tables}")
+
+        # 4. Get columns from the first table (assuming schema is same across different years)
         print("📋 Getting all columns from selected table...")
-        all_columns = self.get_all_table_columns(selected_table)
+        all_columns = self.get_all_table_columns(selected_tables[0])
         
         # 5. Let LLM choose the best subset of columns
         print("🤖 LLM selecting best columns...")
-        selection = await self.select_best_columns(query, intent, selected_table, all_columns)
-        print(f"Selected: {len(selection['selected_variables'])} variables from {selected_table}: {selection['selected_variables']}")
+        selection = await self.select_best_columns(query, intent, selected_tables[0], all_columns)
+        print(f"Selected: {len(selection['selected_variables'])} variables from {selected_tables[0]}: {selection['selected_variables']}")
         
-        # 6. Build geographic filter and extract state
+        # 6. Extract state
         print("🗺️ Extracting state")
         state_name = self.state_detect.extract_state_from_query(query, intent['state'], geojson_dir)
         
         # 7. Query BigQuery
         print("📊 Querying BigQuery...")
         try:
-            gdf = self.bq_client.query_acs_with_geometry(
-                selection['selected_table'],
-                selection['selected_variables'],
-                intent['geo_level'],
-                geojson_dir,
-                state_name
-            )
+            if len(selected_tables) > 1:
+                # Multi year query
+                print(f"Executing multi-year query for {len(selected_tables)} tables")
+                gdf = self.bq_client.query_acs_multi_year(
+                    selected_tables,
+                    selection['selected_variables'],
+                    intent['geo_level'],
+                    geojson_dir,
+                    state_name
+                )
+            else:
+                # Single year/table query
+                gdf = self.bq_client.query_acs_with_geometry(
+                    selection['selected_table'],
+                    selection['selected_variables'],
+                    intent['geo_level'],
+                    geojson_dir,
+                    state_name
+                )
 
             print(f"✅ Retrieved {len(gdf)} features with {len(selection['selected_variables'])} variables and geometries")
             
@@ -403,5 +414,5 @@ Choose column names that directly answer the user's query."""
             
             return gdf, selection
         except Exception as e:
-            print(f"❌ Error in combined query: {str(e)}")
+            print(f"❌ Error in query: {str(e)}")
             raise
